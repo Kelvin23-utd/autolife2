@@ -1,6 +1,7 @@
 package com.google.mediapipe.examples.llminference
 
 import android.Manifest
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -23,29 +24,49 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Request location permission
         requestPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
 
         setContent {
             MaterialTheme {
-                LocationScreen()
+                LocationAndVisionScreen()
             }
         }
     }
 }
-@Composable
-fun LocationScreen() {
-    val context = LocalContext.current
-    var analysis by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(false) }
 
-    // Create and remember the LocationAnalyzer
-    val locationAnalyzer = remember { LocationAnalyzer(context) }
+@Composable
+fun LocationAndVisionScreen() {
+    val context = LocalContext.current
+    var locationAnalysis by remember { mutableStateOf<String?>(null) }
+    var visionAnalysis by remember { mutableStateOf<String?>(null) }
+    var isLocationLoading by remember { mutableStateOf(false) }
+    var isVisionLoading by remember { mutableStateOf(false) }
+
+    // Lazy state holders for analyzers
+    var locationAnalyzer by remember { mutableStateOf<LocationAnalyzer?>(null) }
+    var llmVisionTest by remember { mutableStateOf<LlmVisionTest?>(null) }
+
+    // Clean up function
+    fun cleanupResources() {
+        try {
+            locationAnalyzer?.let {
+                it.close()
+                locationAnalyzer = null
+            }
+            llmVisionTest?.let {
+                it.close()
+                llmVisionTest = null
+            }
+            System.gc()
+        } catch (e: Exception) {
+            Log.e("Cleanup", "Error during cleanup", e)
+        }
+    }
 
     // Cleanup when the composable is disposed
-    DisposableEffect(locationAnalyzer) {
+    DisposableEffect(Unit) {
         onDispose {
-            locationAnalyzer.close()
+            cleanupResources()
         }
     }
 
@@ -54,190 +75,90 @@ fun LocationScreen() {
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Location scanning section
         Button(
             onClick = {
-                isLoading = true
+                isLocationLoading = true
                 kotlinx.coroutines.MainScope().launch {
                     try {
                         withContext(Dispatchers.IO) {
+                            // Lazy initialization of LocationAnalyzer
+                            if (locationAnalyzer == null) {
+                                locationAnalyzer = LocationAnalyzer(context)
+                            }
+
                             val wifiScanner = WifiScanner(context)
                             val networks = wifiScanner.getWifiNetworks()
-                            analysis = locationAnalyzer.analyzeLocation(networks)
+                            locationAnalysis = locationAnalyzer?.analyzeLocation(networks)
+                                ?: "Error: Analyzer not initialized"
                         }
                     } catch (e: Exception) {
                         Log.e("LocationScreen", "Error analyzing location", e)
-                        analysis = "Error: ${e.message}"
+                        locationAnalysis = "Error: ${e.message}"
+                        // Cleanup on error
+                        locationAnalyzer?.close()
+                        locationAnalyzer = null
                     } finally {
-                        isLoading = false
+                        isLocationLoading = false
                     }
                 }
-            }
+            },
+            enabled = !isLocationLoading
         ) {
             Text("Scan Location")
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         when {
-            isLoading -> CircularProgressIndicator()
-            analysis != null -> Text(analysis!!)
+            isLocationLoading -> CircularProgressIndicator()
+            locationAnalysis != null -> Text("Location: ${locationAnalysis!!}")
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Divider()
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Vision test section
+        Button(
+            onClick = {
+                isVisionLoading = true
+                kotlinx.coroutines.MainScope().launch {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            // Lazy initialization of LlmVisionTest
+                            if (llmVisionTest == null) {
+                                llmVisionTest = LlmVisionTest(context)
+                            }
+
+                            val bitmap = BitmapFactory.decodeResource(
+                                context.resources,
+                                R.drawable.s1
+                            )
+                            visionAnalysis = llmVisionTest?.testImageAnalysis(bitmap)
+                                ?: "Error: Vision test not initialized"
+                        }
+                    } catch (e: Exception) {
+                        Log.e("VisionTest", "Error running vision test", e)
+                        visionAnalysis = "Error: ${e.message}"
+                        // Cleanup on error
+                        llmVisionTest?.close()
+                        llmVisionTest = null
+                    } finally {
+                        isVisionLoading = false
+                    }
+                }
+            },
+            enabled = !isVisionLoading
+        ) {
+            Text("Run Vision Test")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        when {
+            isVisionLoading -> CircularProgressIndicator()
+            visionAnalysis != null -> Text("Vision: ${visionAnalysis!!}")
         }
     }
 }
-
-
-//import android.content.Context
-//import android.graphics.Bitmap
-//import android.os.Bundle
-//import androidx.activity.ComponentActivity
-//import androidx.activity.compose.setContent
-//import androidx.compose.foundation.layout.Box
-//import androidx.compose.foundation.layout.Column
-//import androidx.compose.foundation.layout.fillMaxSize
-//import androidx.compose.foundation.layout.fillMaxWidth
-//import androidx.compose.foundation.layout.padding
-//import androidx.compose.material3.CircularProgressIndicator
-//import androidx.compose.material3.MaterialTheme
-//import androidx.compose.material3.Surface
-//import androidx.compose.material3.Text
-//import androidx.compose.runtime.Composable
-//import androidx.compose.runtime.DisposableEffect
-//import androidx.compose.runtime.LaunchedEffect
-//import androidx.compose.runtime.getValue
-//import androidx.compose.runtime.mutableStateOf
-//import androidx.compose.runtime.remember
-//import androidx.compose.runtime.setValue
-//import androidx.compose.ui.Alignment
-//import androidx.compose.ui.Modifier
-//import androidx.compose.ui.platform.LocalContext
-//import androidx.compose.ui.unit.dp
-//import com.google.mediapipe.tasks.genai.llminference.LlmInference
-//import kotlinx.coroutines.Dispatchers
-//import kotlinx.coroutines.withContext
-//
-//
-//class MainActivity : ComponentActivity() {
-//    override fun onCreate(savedInstanceState: Bundle?) {
-//        super.onCreate(savedInstanceState)
-//        val modelPath = "/data/local/tmp/llm/gemma2-2b-gpu.bin"
-//
-//        setContent {
-//            MaterialTheme {
-//                Surface(
-//                    modifier = Modifier.fillMaxSize(),
-//                    color = MaterialTheme.colorScheme.background
-//                ) {
-//                    // Replace yourBitmap with actual image
-//                    val dummyBitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-//                    VisionInferenceScreen(
-//                        modelPath = modelPath,
-//                        image = dummyBitmap,
-//                        prompt = "Describe what you see in this image"
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}
-//
-//class VisionInferenceHelper(private val context: Context) {
-//    private var llmInference: LlmInference? = null
-//
-//    suspend fun initializeLLM(modelPath: String) {
-//        withContext(Dispatchers.IO) {
-//            try {
-//                val options = LlmInference.LlmInferenceOptions.builder()
-//                    .setModelPath(modelPath)
-//                    .setMaxTokens(1024)
-//                    .setTopK(40)
-//                    .setTemperature(0.8f)
-//                    .setRandomSeed(101)
-//                    .build()
-//
-//                llmInference = LlmInference.createFromOptions(context, options)
-//            } catch (e: Exception) {
-//                throw Exception("Failed to initialize LLM: ${e.message}")
-//            }
-//        }
-//    }
-//
-//    suspend fun generateVisionResponse(prompt: String, image: Bitmap): String {
-//        return withContext(Dispatchers.IO) {
-//            try {
-//                llmInference?.generateResponse(prompt) ?:
-//                throw Exception("LLM not initialized")
-//            } catch (e: Exception) {
-//                throw Exception("Failed to generate response: ${e.message}")
-//            }
-//        }
-//    }
-//
-//    fun close() {
-//        llmInference?.close()
-//    }
-//}
-//
-//@Composable
-//fun VisionInferenceScreen(
-//    modelPath: String,
-//    image: Bitmap,
-//    prompt: String
-//) {
-//    var response by remember { mutableStateOf<String?>(null) }
-//    var error by remember { mutableStateOf<String?>(null) }
-//    var isLoading by remember { mutableStateOf(true) }
-//
-//    val context = LocalContext.current
-//    val helper = remember(context) { VisionInferenceHelper(context) }
-//
-//    LaunchedEffect(Unit) {
-//        try {
-//            helper.initializeLLM(modelPath)
-//            response = helper.generateVisionResponse(prompt, image)
-//            isLoading = false
-//        } catch (e: Exception) {
-//            error = e.message
-//            isLoading = false
-//        }
-//    }
-//
-//    DisposableEffect(Unit) {
-//        onDispose {
-//            helper.close()
-//        }
-//    }
-//
-//    Box(
-//        modifier = Modifier.fillMaxSize(),
-//        contentAlignment = Alignment.Center
-//    ) {
-//        Column(
-//            modifier = Modifier
-//                .fillMaxWidth()
-//                .padding(16.dp),
-//            horizontalAlignment = Alignment.CenterHorizontally
-//        ) {
-//            when {
-//                isLoading -> {
-//                    CircularProgressIndicator()
-//                    Text(
-//                        text = "Generating response...",
-//                        modifier = Modifier.padding(top = 16.dp)
-//                    )
-//                }
-//                error != null -> {
-//                    Text(
-//                        text = "Error: $error",
-//                        color = MaterialTheme.colorScheme.error
-//                    )
-//                }
-//                response != null -> {
-//                    Text(
-//                        text = response!!,
-//                        style = MaterialTheme.typography.bodyLarge
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}
