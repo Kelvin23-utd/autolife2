@@ -3,27 +3,34 @@ package com.google.mediapipe.examples.llminference
 import android.content.Context
 import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import java.io.Closeable
 
-class LocationAnalyzer(private val context: Context) {
+class LocationAnalyzer(private val context: Context) : Closeable {
     companion object {
         private const val TAG = "LocationAnalyzer"
     }
 
-    private val llmInference: LlmInference by lazy {
+    private var llmInference: LlmInference? = null
+
+    init {
+        createLlmInference()
+    }
+
+    private fun createLlmInference() {
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
             .setMaxTokens(1024)  // Longer responses
-            .setTopK(100)         // More focused predictions
+            .setTopK(20)         // More focused predictions
             .setTemperature(0.3f)  // More deterministic
             .setRandomSeed(101)    // Enable temperature/topK effects
             .build()
 
-        LlmInference.createFromOptions(context, options)
+        llmInference = LlmInference.createFromOptions(context, options)
     }
 
     fun analyzeLocation(ssids: List<String>): String {
         val prompt = """
-            Based on the following WiFi network names, analyze where this location might be:
+            Based on the following WiFi network names, analyze where this location might be(response in summary:
             ${ssids.joinToString("\n")}
             Provide a brief analysis of the likely location.
         """.trimIndent()
@@ -31,11 +38,17 @@ class LocationAnalyzer(private val context: Context) {
         Log.d(TAG, "Sending prompt to LLM:")
         Log.d(TAG, prompt)
 
-        val response = llmInference.generateResponse(prompt)
+        val response = llmInference?.generateResponse(prompt)
+            ?: throw IllegalStateException("LLM not initialized")
 
         Log.d(TAG, "Received response from LLM:")
         Log.d(TAG, response)
 
         return response
+    }
+
+    override fun close() {
+        llmInference?.close()
+        llmInference = null
     }
 }

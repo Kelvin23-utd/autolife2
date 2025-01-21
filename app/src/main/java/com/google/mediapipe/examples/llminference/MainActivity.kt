@@ -2,6 +2,7 @@ package com.google.mediapipe.examples.llminference
 
 import android.Manifest
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,12 +33,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
 @Composable
 fun LocationScreen() {
     val context = LocalContext.current
     var analysis by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+
+    // Create and remember the LocationAnalyzer
+    val locationAnalyzer = remember { LocationAnalyzer(context) }
+
+    // Cleanup when the composable is disposed
+    DisposableEffect(locationAnalyzer) {
+        onDispose {
+            locationAnalyzer.close()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -47,16 +57,16 @@ fun LocationScreen() {
         Button(
             onClick = {
                 isLoading = true
-                // Launch coroutine to perform scanning and analysis
                 kotlinx.coroutines.MainScope().launch {
                     try {
                         withContext(Dispatchers.IO) {
                             val wifiScanner = WifiScanner(context)
                             val networks = wifiScanner.getWifiNetworks()
-
-                            val locationAnalyzer = LocationAnalyzer(context)
                             analysis = locationAnalyzer.analyzeLocation(networks)
                         }
+                    } catch (e: Exception) {
+                        Log.e("LocationScreen", "Error analyzing location", e)
+                        analysis = "Error: ${e.message}"
                     } finally {
                         isLoading = false
                     }
