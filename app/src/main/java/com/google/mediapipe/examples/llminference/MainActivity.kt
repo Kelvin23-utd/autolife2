@@ -1,6 +1,7 @@
 package com.google.mediapipe.examples.llminference
 
 import android.Manifest
+import android.content.ComponentCallbacks2
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -17,227 +18,218 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    init {
+        // Request lower memory pressure
+        System.gc()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        when (level) {
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL,
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> {
+                // Clear any caches or non-essential data
+                System.gc()
+            }
+        }
+    }
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
+        ActivityResultContracts.RequestMultiplePermissions()
     ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Request location permission
-        requestPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        requestPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            )
+        )
 
         setContent {
             MaterialTheme {
-                LocationScreen()
+                MainScreen()
             }
         }
     }
 }
-@Composable
-fun LocationScreen() {
-    val context = LocalContext.current
-    var analysis by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(false) }
 
-    // Create and remember the LocationAnalyzer
-    val locationAnalyzer = remember { LocationAnalyzer(context) }
+@Composable
+fun MainScreen() {
+    val context = LocalContext.current
+    var locationAnalysis by remember { mutableStateOf<String?>(null) }
+    var motionAnalysis by remember { mutableStateOf<String?>(null) }
+    var motionHistory by remember { mutableStateOf<String?>(null) }
+    var combinedAnalysis by remember { mutableStateOf<String?>(null) }
+    var isLocationLoading by remember { mutableStateOf(false) }
+    var isMotionTracking by remember { mutableStateOf(false) }
+    var isCombinedAnalyzing by remember { mutableStateOf(false) }
+
+    // Create analyzers
+    val locationAnalyzer = remember(context) { LocationAnalyzer(context) }
+    val motionDetector = remember(context) { MotionDetector(context) }
+    val motionLocationAnalyzer = remember(context) { MotionLocationAnalyzer(context) }
 
     // Cleanup when the composable is disposed
-    DisposableEffect(locationAnalyzer) {
+    DisposableEffect(key1 = locationAnalyzer, key2 = motionDetector, key3 = motionLocationAnalyzer) {
         onDispose {
             locationAnalyzer.close()
+            if (isMotionTracking) {
+                motionDetector.stopDetection()
+            }
+            motionLocationAnalyzer.close()
         }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Button(
-            onClick = {
-                isLoading = true
-                kotlinx.coroutines.MainScope().launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            val wifiScanner = WifiScanner(context)
-                            val networks = wifiScanner.getWifiNetworks()
-                            analysis = locationAnalyzer.analyzeLocation(networks)
+        // Combined Analysis Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Combined Motion & Location Analysis",
+                    style = MaterialTheme.typography.titleMedium)
+
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        if (!isCombinedAnalyzing) {
+                            isCombinedAnalyzing = true
+                            motionLocationAnalyzer.startAnalysis { result ->
+                                combinedAnalysis = result
+                            }
+                        } else {
+                            motionLocationAnalyzer.stopAnalysis()
+                            isCombinedAnalyzing = false
                         }
-                    } catch (e: Exception) {
-                        Log.e("LocationScreen", "Error analyzing location", e)
-                        analysis = "Error: ${e.message}"
-                    } finally {
-                        isLoading = false
                     }
+                ) {
+                    Text(if (isCombinedAnalyzing) "Stop Combined Analysis" else "Start Combined Analysis")
+                }
+
+                combinedAnalysis?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
-        ) {
-            Text("Scan Location")
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        // Divider for separation
+        Divider()
 
-        when {
-            isLoading -> CircularProgressIndicator()
-            analysis != null -> Text(analysis!!)
+        // Individual Analysis Sections
+        Text("Individual Analysis Tools", style = MaterialTheme.typography.titleMedium)
+
+        // Location scanning section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Location Analysis", style = MaterialTheme.typography.titleSmall)
+                Button(
+                    onClick = {
+                        isLocationLoading = true
+                        kotlinx.coroutines.MainScope().launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    val wifiScanner = WifiScanner(context)
+                                    val networks = wifiScanner.getWifiNetworks()
+                                    locationAnalysis = locationAnalyzer.analyzeLocation(networks)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("MainScreen", "Error analyzing location", e)
+                                locationAnalysis = "Error: ${e.message}"
+                            } finally {
+                                isLocationLoading = false
+                            }
+                        }
+                    }
+                ) {
+                    Text("Scan Location")
+                }
+
+                when {
+                    isLocationLoading -> CircularProgressIndicator()
+                    locationAnalysis != null -> Text(locationAnalysis!!)
+                }
+            }
+        }
+
+        // Motion detection section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Motion Analysis", style = MaterialTheme.typography.titleSmall)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            if (!isMotionTracking) {
+                                motionDetector.startDetection { motions ->
+                                    motionAnalysis = "Current motions: ${motions.joinToString(", ")}"
+                                    motionHistory = motionDetector.getMotionHistory()
+                                }
+                            } else {
+                                motionDetector.stopDetection()
+                                motionAnalysis = null
+                            }
+                            isMotionTracking = !isMotionTracking
+                        }
+                    ) {
+                        Text(if (isMotionTracking) "Stop Detection" else "Start Detection")
+                    }
+
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            motionDetector.clearMotionHistory()
+                            motionHistory = null
+                        }
+                    ) {
+                        Text("Clear History")
+                    }
+                }
+
+                motionAnalysis?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                if (!motionHistory.isNullOrEmpty()) {
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    Text(
+                        text = "Motion History (Last 10 Detections):",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = motionHistory!!,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
         }
     }
 }
-
-
-//import android.content.Context
-//import android.graphics.Bitmap
-//import android.os.Bundle
-//import androidx.activity.ComponentActivity
-//import androidx.activity.compose.setContent
-//import androidx.compose.foundation.layout.Box
-//import androidx.compose.foundation.layout.Column
-//import androidx.compose.foundation.layout.fillMaxSize
-//import androidx.compose.foundation.layout.fillMaxWidth
-//import androidx.compose.foundation.layout.padding
-//import androidx.compose.material3.CircularProgressIndicator
-//import androidx.compose.material3.MaterialTheme
-//import androidx.compose.material3.Surface
-//import androidx.compose.material3.Text
-//import androidx.compose.runtime.Composable
-//import androidx.compose.runtime.DisposableEffect
-//import androidx.compose.runtime.LaunchedEffect
-//import androidx.compose.runtime.getValue
-//import androidx.compose.runtime.mutableStateOf
-//import androidx.compose.runtime.remember
-//import androidx.compose.runtime.setValue
-//import androidx.compose.ui.Alignment
-//import androidx.compose.ui.Modifier
-//import androidx.compose.ui.platform.LocalContext
-//import androidx.compose.ui.unit.dp
-//import com.google.mediapipe.tasks.genai.llminference.LlmInference
-//import kotlinx.coroutines.Dispatchers
-//import kotlinx.coroutines.withContext
-//
-//
-//class MainActivity : ComponentActivity() {
-//    override fun onCreate(savedInstanceState: Bundle?) {
-//        super.onCreate(savedInstanceState)
-//        val modelPath = "/data/local/tmp/llm/gemma2-2b-gpu.bin"
-//
-//        setContent {
-//            MaterialTheme {
-//                Surface(
-//                    modifier = Modifier.fillMaxSize(),
-//                    color = MaterialTheme.colorScheme.background
-//                ) {
-//                    // Replace yourBitmap with actual image
-//                    val dummyBitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-//                    VisionInferenceScreen(
-//                        modelPath = modelPath,
-//                        image = dummyBitmap,
-//                        prompt = "Describe what you see in this image"
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}
-//
-//class VisionInferenceHelper(private val context: Context) {
-//    private var llmInference: LlmInference? = null
-//
-//    suspend fun initializeLLM(modelPath: String) {
-//        withContext(Dispatchers.IO) {
-//            try {
-//                val options = LlmInference.LlmInferenceOptions.builder()
-//                    .setModelPath(modelPath)
-//                    .setMaxTokens(1024)
-//                    .setTopK(40)
-//                    .setTemperature(0.8f)
-//                    .setRandomSeed(101)
-//                    .build()
-//
-//                llmInference = LlmInference.createFromOptions(context, options)
-//            } catch (e: Exception) {
-//                throw Exception("Failed to initialize LLM: ${e.message}")
-//            }
-//        }
-//    }
-//
-//    suspend fun generateVisionResponse(prompt: String, image: Bitmap): String {
-//        return withContext(Dispatchers.IO) {
-//            try {
-//                llmInference?.generateResponse(prompt) ?:
-//                throw Exception("LLM not initialized")
-//            } catch (e: Exception) {
-//                throw Exception("Failed to generate response: ${e.message}")
-//            }
-//        }
-//    }
-//
-//    fun close() {
-//        llmInference?.close()
-//    }
-//}
-//
-//@Composable
-//fun VisionInferenceScreen(
-//    modelPath: String,
-//    image: Bitmap,
-//    prompt: String
-//) {
-//    var response by remember { mutableStateOf<String?>(null) }
-//    var error by remember { mutableStateOf<String?>(null) }
-//    var isLoading by remember { mutableStateOf(true) }
-//
-//    val context = LocalContext.current
-//    val helper = remember(context) { VisionInferenceHelper(context) }
-//
-//    LaunchedEffect(Unit) {
-//        try {
-//            helper.initializeLLM(modelPath)
-//            response = helper.generateVisionResponse(prompt, image)
-//            isLoading = false
-//        } catch (e: Exception) {
-//            error = e.message
-//            isLoading = false
-//        }
-//    }
-//
-//    DisposableEffect(Unit) {
-//        onDispose {
-//            helper.close()
-//        }
-//    }
-//
-//    Box(
-//        modifier = Modifier.fillMaxSize(),
-//        contentAlignment = Alignment.Center
-//    ) {
-//        Column(
-//            modifier = Modifier
-//                .fillMaxWidth()
-//                .padding(16.dp),
-//            horizontalAlignment = Alignment.CenterHorizontally
-//        ) {
-//            when {
-//                isLoading -> {
-//                    CircularProgressIndicator()
-//                    Text(
-//                        text = "Generating response...",
-//                        modifier = Modifier.padding(top = 16.dp)
-//                    )
-//                }
-//                error != null -> {
-//                    Text(
-//                        text = "Error: $error",
-//                        color = MaterialTheme.colorScheme.error
-//                    )
-//                }
-//                response != null -> {
-//                    Text(
-//                        text = response!!,
-//                        style = MaterialTheme.typography.bodyLarge
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}

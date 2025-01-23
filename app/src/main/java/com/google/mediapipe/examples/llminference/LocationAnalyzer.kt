@@ -11,6 +11,7 @@ class LocationAnalyzer(private val context: Context) : Closeable {
     }
 
     private var llmInference: LlmInference? = null
+    private val fileStorage = FileStorage(context)
 
     init {
         createLlmInference()
@@ -30,7 +31,7 @@ class LocationAnalyzer(private val context: Context) : Closeable {
 
     fun analyzeLocation(ssids: List<String>): String {
         val prompt = """
-            Based on the following WiFi network names, analyze where this location might be(response in summary:
+            Based on the following WiFi network names, analyze where this location might be(response in summary within 50 words:
             ${ssids.joinToString("\n")}
             Provide a brief analysis of the likely location.
         """.trimIndent()
@@ -44,7 +45,26 @@ class LocationAnalyzer(private val context: Context) : Closeable {
         Log.d(TAG, "Received response from LLM:")
         Log.d(TAG, response)
 
+        // Save the response to file
+        fileStorage.saveLLMResponse(response)
+
         return response
+    }
+
+    /**
+     * Gets the last saved LLM analysis response
+     * @return The last saved response or null if none exists
+     */
+    fun getLastAnalysis(): String? {
+        return fileStorage.getLastResponse()
+    }
+
+    /**
+     * Clears any previously saved analysis results
+     * @return true if successfully cleared, false otherwise
+     */
+    fun clearAnalysisHistory(): Boolean {
+        return fileStorage.clearResponses()
     }
 
     override fun close() {
