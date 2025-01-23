@@ -53,31 +53,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    var locationAnalysis by remember { mutableStateOf<String?>(null) }
-    var motionAnalysis by remember { mutableStateOf<String?>(null) }
-    var motionHistory by remember { mutableStateOf<String?>(null) }
-    var combinedAnalysis by remember { mutableStateOf<String?>(null) }
-    var isLocationLoading by remember { mutableStateOf(false) }
-    var isMotionTracking by remember { mutableStateOf(false) }
-    var isCombinedAnalyzing by remember { mutableStateOf(false) }
+    var currentAnalysis by remember { mutableStateOf<String?>(null) }
+    var currentPhase by remember { mutableStateOf(SequentialMotionLocationAnalyzer.AnalysisPhase.NONE) }
+    var isAnalyzing by remember { mutableStateOf(false) }
 
-    // Create analyzers
-    val locationAnalyzer = remember(context) { LocationAnalyzer(context) }
-    val motionDetector = remember(context) { MotionDetector(context) }
-    val motionLocationAnalyzer = remember(context) { MotionLocationAnalyzer(context) }
+    val analyzer = remember { SequentialMotionLocationAnalyzer(context) }
 
-    // Cleanup when the composable is disposed
-    DisposableEffect(key1 = locationAnalyzer, key2 = motionDetector, key3 = motionLocationAnalyzer) {
+    // Cleanup
+    DisposableEffect(analyzer) {
         onDispose {
-            locationAnalyzer.close()
-            if (isMotionTracking) {
-                motionDetector.stopDetection()
-            }
-            motionLocationAnalyzer.close()
+            analyzer.close()
         }
     }
 
@@ -87,7 +75,6 @@ fun MainScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Combined Analysis Section
         Card(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -95,138 +82,52 @@ fun MainScreen() {
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Combined Motion & Location Analysis",
-                    style = MaterialTheme.typography.titleMedium)
+                Text("Sequential Analysis", style = MaterialTheme.typography.titleMedium)
 
                 Button(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        if (!isCombinedAnalyzing) {
-                            isCombinedAnalyzing = true
-                            motionLocationAnalyzer.startAnalysis { result ->
-                                combinedAnalysis = result
+                        if (!isAnalyzing) {
+                            isAnalyzing = true
+                            analyzer.startAnalysis { result, phase ->
+                                currentAnalysis = result
+                                currentPhase = phase
+                                if (phase == SequentialMotionLocationAnalyzer.AnalysisPhase.COMPLETE) {
+                                    isAnalyzing = false
+                                }
                             }
                         } else {
-                            motionLocationAnalyzer.stopAnalysis()
-                            isCombinedAnalyzing = false
+                            analyzer.stopAnalysis()
+                            isAnalyzing = false
                         }
                     }
                 ) {
-                    Text(if (isCombinedAnalyzing) "Stop Combined Analysis" else "Start Combined Analysis")
+                    Text(when(currentPhase) {
+                        SequentialMotionLocationAnalyzer.AnalysisPhase.MOTION -> "Motion Detection in Progress..."
+                        SequentialMotionLocationAnalyzer.AnalysisPhase.LOCATION -> "Location Analysis in Progress..."
+                        SequentialMotionLocationAnalyzer.AnalysisPhase.COMPLETE -> "Analysis Complete"
+                        SequentialMotionLocationAnalyzer.AnalysisPhase.NONE -> "Start Analysis"
+                    })
                 }
 
-                combinedAnalysis?.let {
+                // Progress indicator
+                if (isAnalyzing) {
+                    LinearProgressIndicator(
+                        progress = when(currentPhase) {
+                            SequentialMotionLocationAnalyzer.AnalysisPhase.MOTION -> 0.3f
+                            SequentialMotionLocationAnalyzer.AnalysisPhase.LOCATION -> 0.7f
+                            SequentialMotionLocationAnalyzer.AnalysisPhase.COMPLETE -> 1.0f
+                            SequentialMotionLocationAnalyzer.AnalysisPhase.NONE -> 0f
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Results display
+                currentAnalysis?.let {
                     Text(
                         text = it,
                         style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-        }
-
-        // Divider for separation
-        Divider()
-
-        // Individual Analysis Sections
-        Text("Individual Analysis Tools", style = MaterialTheme.typography.titleMedium)
-
-        // Location scanning section
-        Card(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("Location Analysis", style = MaterialTheme.typography.titleSmall)
-                Button(
-                    onClick = {
-                        isLocationLoading = true
-                        kotlinx.coroutines.MainScope().launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    val wifiScanner = WifiScanner(context)
-                                    val networks = wifiScanner.getWifiNetworks()
-                                    locationAnalysis = locationAnalyzer.analyzeLocation(networks)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("MainScreen", "Error analyzing location", e)
-                                locationAnalysis = "Error: ${e.message}"
-                            } finally {
-                                isLocationLoading = false
-                            }
-                        }
-                    }
-                ) {
-                    Text("Scan Location")
-                }
-
-                when {
-                    isLocationLoading -> CircularProgressIndicator()
-                    locationAnalysis != null -> Text(locationAnalysis!!)
-                }
-            }
-        }
-
-        // Motion detection section
-        Card(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("Motion Analysis", style = MaterialTheme.typography.titleSmall)
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            if (!isMotionTracking) {
-                                motionDetector.startDetection { motions ->
-                                    motionAnalysis = "Current motions: ${motions.joinToString(", ")}"
-                                    motionHistory = motionDetector.getMotionHistory()
-                                }
-                            } else {
-                                motionDetector.stopDetection()
-                                motionAnalysis = null
-                            }
-                            isMotionTracking = !isMotionTracking
-                        }
-                    ) {
-                        Text(if (isMotionTracking) "Stop Detection" else "Start Detection")
-                    }
-
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            motionDetector.clearMotionHistory()
-                            motionHistory = null
-                        }
-                    ) {
-                        Text("Clear History")
-                    }
-                }
-
-                motionAnalysis?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-
-                if (!motionHistory.isNullOrEmpty()) {
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
-                    Text(
-                        text = "Motion History (Last 10 Detections):",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        text = motionHistory!!,
-                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
