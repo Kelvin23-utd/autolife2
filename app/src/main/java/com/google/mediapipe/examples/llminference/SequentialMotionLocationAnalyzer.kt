@@ -4,19 +4,24 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
 import java.io.Closeable
+import java.lang.ref.WeakReference
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 
-class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable {
+class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
     companion object {
         private const val TAG = "SequentialAnalyzer"
         private const val MOTION_DURATION = 10000L // 10 seconds
     }
 
+    private val contextRef = WeakReference(context)
+    private val analyzerScope = CoroutineScope(Dispatchers.Main + Job())
+    private var currentJob: Job? = null
+
     private var isAnalyzing = false
     private var currentPhase = AnalysisPhase.NONE
     private var motionDetector: MotionDetector? = null
     private var locationAnalyzer: LocationAnalyzer? = null
-    private var llmInference: LlmInference? = null
+    // Removed LLM inference reference since fusion is simplified
 
     enum class AnalysisPhase {
         NONE,
@@ -32,6 +37,11 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
             return
         }
 
+        val context = contextRef.get() ?: run {
+            callback("Context no longer available", AnalysisPhase.NONE)
+            return
+        }
+
         // Start with motion phase
         startMotionPhase(callback)
     }
@@ -41,18 +51,35 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
         currentPhase = AnalysisPhase.MOTION
         System.gc() // Request garbage collection before starting
 
+        val context = contextRef.get() ?: run {
+            cleanup()
+            callback("Context no longer available", AnalysisPhase.NONE)
+            return
+        }
+
         motionDetector = MotionDetector(context)
         motionDetector?.startDetection { motions ->
             callback("Detected motions: ${motions.joinToString(", ")}", AnalysisPhase.MOTION)
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
-            delay(MOTION_DURATION)
-            finishMotionPhase(callback)
+        currentJob = analyzerScope.launch {
+            try {
+                delay(MOTION_DURATION)
+                finishMotionPhase(callback)
+            } catch (e: CancellationException) {
+                cleanup()
+                throw e
+            }
         }
     }
 
     private fun finishMotionPhase(callback: (String, AnalysisPhase) -> Unit) {
+        val context = contextRef.get() ?: run {
+            cleanup()
+            callback("Context no longer available", AnalysisPhase.NONE)
+            return
+        }
+
         val motionStorage = MotionStorage(context)
         val motionHistory = motionStorage.getMotionHistory()
 
@@ -68,7 +95,13 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
         currentPhase = AnalysisPhase.LOCATION
         callback("Starting location analysis...", AnalysisPhase.LOCATION)
 
-        CoroutineScope(Dispatchers.Main).launch {
+        val context = contextRef.get() ?: run {
+            cleanup()
+            callback("Context no longer available", AnalysisPhase.NONE)
+            return
+        }
+
+        currentJob = analyzerScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     locationAnalyzer = LocationAnalyzer(context)
@@ -94,10 +127,16 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
         locationAnalyzer = null
         System.gc() // Request cleanup
 
-        CoroutineScope(Dispatchers.Main).launch {
+        currentJob = analyzerScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val result = performContextFusion()
+                    val context = contextRef.get() ?: run {
+                        cleanup()
+                        callback("Context no longer available", AnalysisPhase.NONE)
+                        return@withContext
+                    }
+
+                    val result = performContextFusion(context)
                     callback(result, AnalysisPhase.FUSION)
                 }
                 finishAnalysis(callback)
@@ -109,34 +148,8 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
         }
     }
 
-    private fun performContextFusion(): String {
-//        val options = LlmInference.LlmInferenceOptions.builder()
-//            .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
-//            .setMaxTokens(512)  // Minimal tokens for short response
-//            .setTopK(20)
-//            .setTemperature(0.3f)
-//            .build()
-//
-//        llmInference = LlmInference.createFromOptions(context, options)
-//
-//        val motionStorage = MotionStorage(context)
-//        val fileStorage = FileStorage(context)
-//        val motionHistory = motionStorage.getMotionHistory() ?: "No motion data"
-//        val locationHistory = fileStorage.getLastResponse() ?: "No location data"
-//
-//        val prompt = """
-//            Given the following data, describe the most likely activity in exactly 20 words:
-//            Motion: $motionHistory
-//            Location: $locationHistory
-//        """.trimIndent()
-//
-//        val response = llmInference?.generateResponse(prompt) ?: "Fusion analysis failed"
-//
-//        // Clean up LLM immediately after use
-//        llmInference?.close()
-//        llmInference = null
-
-        return "next:vvvv flagggg"
+    private fun performContextFusion(context: Context): String {
+        return "Fusion phase completed" // Simplified return
     }
 
     private fun finishAnalysis(callback: (String, AnalysisPhase) -> Unit) {
@@ -147,6 +160,8 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
     }
 
     private fun getCombinedResults(): String {
+        val context = contextRef.get() ?: return "Context no longer available"
+
         val resultBuilder = StringBuilder()
 
         // Motion results
@@ -168,22 +183,25 @@ class SequentialMotionLocationAnalyzer(private val context: Context) : Closeable
     fun getCurrentPhase(): AnalysisPhase = currentPhase
 
     fun stopAnalysis() {
+        currentJob?.cancel()
         cleanup()
     }
 
     private fun cleanup() {
+        currentJob?.cancel()
+        currentJob = null
         motionDetector?.stopDetection()
         motionDetector = null
         locationAnalyzer?.close()
         locationAnalyzer = null
         isAnalyzing = false
         currentPhase = AnalysisPhase.NONE
+        System.gc() // Request cleanup
     }
 
     override fun close() {
-        cleanup()
-        llmInference?.close()
-        llmInference = null
+        stopAnalysis()
+        analyzerScope.cancel()
         System.gc() // Final cleanup
     }
 }
