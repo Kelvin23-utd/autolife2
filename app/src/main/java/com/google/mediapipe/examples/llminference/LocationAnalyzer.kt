@@ -10,24 +10,8 @@ class LocationAnalyzer(private val context: Context) : Closeable {
         private const val TAG = "LocationAnalyzer"
     }
 
-    private var llmInference: LlmInference? = null
     private val fileStorage = FileStorage(context)
-
-    init {
-        createLlmInference()
-    }
-
-    private fun createLlmInference() {
-        val options = LlmInference.LlmInferenceOptions.builder()
-            .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
-            .setMaxTokens(1024)  // Longer responses
-            .setTopK(20)         // More focused predictions
-            .setTemperature(0.3f)  // More deterministic
-            .setRandomSeed(101)    // Enable temperature/topK effects
-            .build()
-
-        llmInference = LlmInference.createFromOptions(context, options)
-    }
+    private val llmInference: LlmInference = LlmManager.getInstance(context)
 
     fun analyzeLocation(ssids: List<String>): String {
         val prompt = """
@@ -39,8 +23,12 @@ class LocationAnalyzer(private val context: Context) : Closeable {
         Log.d(TAG, "Sending prompt to LLM:")
         Log.d(TAG, prompt)
 
-        val response = llmInference?.generateResponse(prompt)
-            ?: throw IllegalStateException("LLM not initialized")
+        val response = try {
+            llmInference.generateResponse(prompt)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating LLM response", e)
+            throw IllegalStateException("Failed to generate LLM response: ${e.message}")
+        }
 
         Log.d(TAG, "Received response from LLM:")
         Log.d(TAG, response)
@@ -68,7 +56,36 @@ class LocationAnalyzer(private val context: Context) : Closeable {
     }
 
     override fun close() {
-        llmInference?.close()
-        llmInference = null
+        // No need to close LLM instance here as it's managed by LlmManager
+    }
+}
+
+// Add this singleton object in the same package
+object LlmManager {
+    private var llmInstance: LlmInference? = null
+    private val lock = Object()
+
+    fun getInstance(context: Context): LlmInference {
+        synchronized(lock) {
+            if (llmInstance == null) {
+                val options = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
+                    .setMaxTokens(1024)
+                    .setTopK(20)
+                    .setTemperature(0.3f)
+                    .setRandomSeed(101)
+                    .build()
+
+                llmInstance = LlmInference.createFromOptions(context, options)
+            }
+            return llmInstance!!
+        }
+    }
+
+    fun shutdown() {
+        synchronized(lock) {
+            llmInstance?.close()
+            llmInstance = null
+        }
     }
 }

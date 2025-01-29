@@ -12,28 +12,12 @@ class ContextFusionAnalyzer(private val context: Context) : Closeable {
         private const val TAG = "ContextFusionAnalyzer"
     }
 
-    @Volatile
-    private var llmInference: LlmInference? = null
+    private val llmInference: LlmInference = LlmManager.getInstance(context)
     private var motionStorage: MotionStorage? = null
     private var fileStorage: FileStorage? = null
 
-    @Synchronized
-    private fun initializeLlm() {
-        if (llmInference == null) {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
-                .setMaxTokens(1024)
-                .setTopK(20)
-                .setTemperature(0.3f)
-                .build()
-
-            llmInference = LlmInference.createFromOptions(context, options)
-        }
-    }
-
     suspend fun performFusion(): String = withContext(Dispatchers.IO) {
         try {
-            initializeLlm()
             motionStorage = MotionStorage(context)
             fileStorage = FileStorage(context)
 
@@ -51,26 +35,29 @@ class ContextFusionAnalyzer(private val context: Context) : Closeable {
 
             Log.d(TAG, "Sending fusion prompt: $prompt")
 
-            val response = llmInference?.generateResponse(prompt) ?: "Fusion analysis failed"
-            Log.d(TAG, "Received fusion response: $response")
+            val response = try {
+                llmInference.generateResponse(prompt)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error generating LLM response", e)
+                "Fusion analysis failed: ${e.message}"
+            }
 
+            Log.d(TAG, "Received fusion response: $response")
             response
+
         } catch (e: Exception) {
             Log.e(TAG, "Error during fusion analysis", e)
             "Error during fusion: ${e.message}"
         }
     }
 
-    @Synchronized
     override fun close() {
         try {
-            llmInference?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing LLM inference", e)
-        } finally {
-            llmInference = null
+            // No need to close LLM instance as it's managed by LlmManager
             motionStorage = null
             fileStorage = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during cleanup", e)
         }
     }
 }
