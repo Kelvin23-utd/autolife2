@@ -30,7 +30,7 @@ class LocationAnalyzer(private val context: Context) : Closeable {
             throw IllegalStateException("Failed to generate LLM response: ${e.message}")
         }
 
-        Log.d(TAG, "Received response from LLM:")
+        Log.d(TAG, "Location, Received response from LLM:")
         Log.d(TAG, response)
 
         // Save the response to file

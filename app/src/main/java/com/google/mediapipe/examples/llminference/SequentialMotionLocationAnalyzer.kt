@@ -16,12 +16,12 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
     private val contextRef = WeakReference(context)
     private val analyzerScope = CoroutineScope(Dispatchers.Main + Job())
     private var currentJob: Job? = null
+    private val llmInference: LlmInference by lazy { LlmManager.getInstance(context) }
 
     private var isAnalyzing = false
     private var currentPhase = AnalysisPhase.NONE
     private var motionDetector: MotionDetector? = null
     private var locationAnalyzer: LocationAnalyzer? = null
-    // Removed LLM inference reference since fusion is simplified
 
     enum class AnalysisPhase {
         NONE,
@@ -42,14 +42,37 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
             return
         }
 
-        // Start with motion phase
         startMotionPhase(callback)
+    }
+
+    private suspend fun runMotionDetection(context: Context, callback: (String, AnalysisPhase) -> Unit): Boolean {
+        return try {
+            withContext(Dispatchers.Main) {
+                motionDetector = MotionDetector(context)
+                var success = false
+
+                motionDetector?.startDetection { motions ->
+                    callback("Current motions: ${motions.joinToString(", ")}", AnalysisPhase.MOTION)
+                }
+
+                delay(MOTION_DURATION)
+                success = true
+                success
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Motion detection error", e)
+            false
+        } finally {
+            motionDetector?.stopDetection()
+            motionDetector = null
+            System.gc()
+        }
     }
 
     private fun startMotionPhase(callback: (String, AnalysisPhase) -> Unit) {
         isAnalyzing = true
         currentPhase = AnalysisPhase.MOTION
-        System.gc() // Request garbage collection before starting
+        System.gc()
 
         val context = contextRef.get() ?: run {
             cleanup()
@@ -57,15 +80,15 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
             return
         }
 
-        motionDetector = MotionDetector(context)
-        motionDetector?.startDetection { motions ->
-            callback("Detected motions: ${motions.joinToString(", ")}", AnalysisPhase.MOTION)
-        }
-
         currentJob = analyzerScope.launch {
             try {
-                delay(MOTION_DURATION)
-                finishMotionPhase(callback)
+                val motionSuccess = runMotionDetection(context, callback)
+                if (motionSuccess) {
+                    finishMotionPhase(callback)
+                } else {
+                    cleanup()
+                    callback("Motion detection failed", AnalysisPhase.MOTION)
+                }
             } catch (e: CancellationException) {
                 cleanup()
                 throw e
@@ -83,10 +106,9 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
         val motionStorage = MotionStorage(context)
         val motionHistory = motionStorage.getMotionHistory()
 
-        // Clean up motion resources immediately
         motionDetector?.stopDetection()
         motionDetector = null
-        System.gc() // Request cleanup
+        System.gc()
 
         startLocationPhase(callback)
     }
@@ -103,13 +125,13 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
 
         currentJob = analyzerScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    locationAnalyzer = LocationAnalyzer(context)
-                    val wifiScanner = WifiScanner(context)
-                    val networks = wifiScanner.getWifiNetworks()
-                    locationAnalyzer?.analyzeLocation(networks)
+                val locationSuccess = runLocationAnalysis(context, callback)
+                if (locationSuccess) {
+                    startFusionPhase(callback)
+                } else {
+                    cleanup()
+                    callback("Location analysis failed", AnalysisPhase.LOCATION)
                 }
-                startFusionPhase(callback)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in location analysis", e)
                 callback("Error in location analysis: ${e.message}", AnalysisPhase.LOCATION)
@@ -118,14 +140,33 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
         }
     }
 
+    private suspend fun runLocationAnalysis(context: Context, callback: (String, AnalysisPhase) -> Unit): Boolean {
+        return try {
+            withContext(Dispatchers.IO) {
+                locationAnalyzer = LocationAnalyzer(context)
+                val wifiScanner = WifiScanner(context)
+                val networks = wifiScanner.getWifiNetworks()
+                val response = locationAnalyzer?.analyzeLocation(networks)
+                callback("Location analysis complete: $response", AnalysisPhase.LOCATION)
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Location analysis error", e)
+            false
+        } finally {
+            locationAnalyzer?.close()
+            locationAnalyzer = null
+            System.gc()
+        }
+    }
+
     private fun startFusionPhase(callback: (String, AnalysisPhase) -> Unit) {
         currentPhase = AnalysisPhase.FUSION
         callback("Starting context fusion...", AnalysisPhase.FUSION)
 
-        // Clean up location resources before LLM
         locationAnalyzer?.close()
         locationAnalyzer = null
-        System.gc() // Request cleanup
+        System.gc()
 
         currentJob = analyzerScope.launch {
             try {
@@ -137,7 +178,9 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
                     }
 
                     val result = performContextFusion(context)
-                    callback(result, AnalysisPhase.FUSION)
+                    withContext(Dispatchers.Main) {
+                        callback(result, AnalysisPhase.FUSION)
+                    }
                 }
                 finishAnalysis(callback)
             } catch (e: Exception) {
@@ -148,8 +191,63 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
         }
     }
 
-    private fun performContextFusion(context: Context): String {
-        return "Fusion phase completed" // Simplified return
+    private suspend fun performContextFusion(context: Context): String {
+        val motionStorage = MotionStorage(context)
+        val fileStorage = FileStorage(context)
+
+        val motionData = motionStorage.getMotionHistory() ?: "No motion data"
+        val locationData = fileStorage.getLastResponse() ?: "No location data"
+
+        var combinedAnalyzer: MotionLocationAnalyzer? = null
+        var additionalAnalysis = ""
+        var contextFusionAnalyzer: ContextFusionAnalyzer? = null
+        var llmFusionResult = ""
+
+        try {
+            // Step 1: Run the MotionLocationAnalyzer and wait for its completion
+            combinedAnalyzer = MotionLocationAnalyzer(context)
+            val analysisPromise = CompletableDeferred<String>()
+
+            combinedAnalyzer.startAnalysis { result ->
+                if (result.contains("Retrieving combined results")) {
+                    analysisPromise.complete(result)
+                }
+            }
+
+            // Wait for motion analysis to complete before proceeding
+            additionalAnalysis = analysisPromise.await()
+
+            // Step 2: Only after motion analysis is complete, run the ContextFusionAnalyzer
+            if (additionalAnalysis.isNotEmpty()) {
+                contextFusionAnalyzer = ContextFusionAnalyzer(context)
+                llmFusionResult = contextFusionAnalyzer.performFusion()
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in fusion analysis", e)
+            if (additionalAnalysis.isEmpty()) {
+                additionalAnalysis = "Additional analysis failed: ${e.message}"
+            }
+            if (llmFusionResult.isEmpty()) {
+                llmFusionResult = "LLM fusion failed: ${e.message}"
+            }
+        } finally {
+            combinedAnalyzer?.close()
+            combinedAnalyzer = null
+            contextFusionAnalyzer?.close()
+            contextFusionAnalyzer = null
+            System.gc()
+        }
+
+        return buildString {
+            append("=== Initial Analysis ===\n")
+            append("Motion: $motionData\n")
+            append("Location: $locationData\n\n")
+            append("=== Motion Location Analysis ===\n")
+            append(additionalAnalysis)
+            append("\n\n=== Context Fusion Analysis ===\n")
+            append(llmFusionResult)
+        }
     }
 
     private fun finishAnalysis(callback: (String, AnalysisPhase) -> Unit) {
@@ -164,14 +262,12 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
 
         val resultBuilder = StringBuilder()
 
-        // Motion results
         resultBuilder.append("=== Motion Analysis Results ===\n")
         val motionStorage = MotionStorage(context)
         val motionHistory = motionStorage.getMotionHistory()
         resultBuilder.append(motionHistory ?: "No motion data available")
         resultBuilder.append("\n\n")
 
-        // Location results
         resultBuilder.append("=== Location Analysis Results ===\n")
         val fileStorage = FileStorage(context)
         val locationHistory = fileStorage.getLastResponse()
@@ -196,12 +292,12 @@ class SequentialMotionLocationAnalyzer(context: Context) : Closeable {
         locationAnalyzer = null
         isAnalyzing = false
         currentPhase = AnalysisPhase.NONE
-        System.gc() // Request cleanup
+        System.gc()
     }
 
     override fun close() {
         stopAnalysis()
         analyzerScope.cancel()
-        System.gc() // Final cleanup
+        System.gc()
     }
 }
