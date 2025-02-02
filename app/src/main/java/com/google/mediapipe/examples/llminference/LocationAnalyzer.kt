@@ -79,7 +79,7 @@ object LlmManager {
         synchronized(lock) {
             if (llmInstance == null) {
                 val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath("/data/local/tmp/llm/gemma-1.1-7b-it-gpu-int8.bin")
+                    .setModelPath("/data/local/tmp/llm/gemma-2b-it-gpu-int4.bin")
                     .setMaxTokens(1024)
                     .setTopK(20)
                     .setTemperature(0.3f)
