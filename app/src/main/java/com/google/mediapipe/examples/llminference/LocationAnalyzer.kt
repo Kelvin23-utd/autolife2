@@ -65,11 +65,21 @@ object LlmManager {
     private var llmInstance: LlmInference? = null
     private val lock = Object()
 
+
+//    private val g2 = "/data/local/tmp/llm/gemma-2b-it-gpu-int4.bin"
+//    private val g22b = "/data/local/tmp/llm/gemma2-2b-gpu.bin"
+//
+//    private val fac = "/data/local/tmp/llm/falcon_gpu.bin"
+//    private val stb = "/data/local/tmp/llm/stablelm_gpu.bin"
+//    private val stb = "/data/local/tmp/llm/phi2_gpu.bin"
+//    private val g7b = "/data/local/tmp/llm/gemma-1.1-7b-it-gpu-int8.bin"
+
+
     fun getInstance(context: Context): LlmInference {
         synchronized(lock) {
             if (llmInstance == null) {
                 val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath("/data/local/tmp/llm/gemma2-2b-gpu.bin")
+                    .setModelPath("/data/local/tmp/llm/gemma-1.1-7b-it-gpu-int8.bin")
                     .setMaxTokens(1024)
                     .setTopK(20)
                     .setTemperature(0.3f)
@@ -89,3 +99,4 @@ object LlmManager {
         }
     }
 }
+       
